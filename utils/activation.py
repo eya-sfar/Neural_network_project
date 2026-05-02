@@ -28,6 +28,10 @@ def tanh_derivative(a):
 def softmax(z):
     exp_z = np.exp(z - np.max(z, axis=1, keepdims=True))
     return exp_z / np.sum(exp_z, axis=1, keepdims=True)
+def linear(z):
+    return z
+def linear_derivative(z):
+    return np.ones_like(z)
 
 
 def get_activation(name):
@@ -39,5 +43,7 @@ def get_activation(name):
         return tanh, tanh_derivative
     elif name == "softmax":
         return softmax, None
+    elif name == "linear":
+        return linear, linear_derivative
     else:
         raise ValueError(f"Activation inconnue: {name}")
