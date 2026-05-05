@@ -3,6 +3,13 @@ import numpy as np
 from utils.activation import get_activation
 from utils.loss import get_loss
 
+from training.regulations import (
+    l2_penalty,
+    add_l2_to_gradients,
+    apply_dropout,
+    apply_dropout_backward
+)
+
 
 class MLP:
     def __init__(
@@ -14,7 +21,9 @@ class MLP:
         epochs=1000,
         activation="relu",
         output_activation="sigmoid",
-        loss="binary_cross_entropy"
+        loss="binary_cross_entropy",
+        l2_lambda=0.0,
+        dropout_rate=0.0
     ):
         self.input_size = input_size
         self.hidden_layers = hidden_layers
@@ -26,6 +35,9 @@ class MLP:
         self.activation_name = activation
         self.output_activation_name = output_activation
         self.loss_name = loss
+
+        self.l2_lambda = l2_lambda
+        self.dropout_rate = dropout_rate
 
         self.activation, self.activation_derivative = get_activation(activation)
         self.output_activation, self.output_activation_derivative = get_activation(output_activation)
@@ -58,7 +70,7 @@ class MLP:
         else:
             raise ValueError(f"Activation inconnue: {self.activation_name}")
 
-    def forward(self, X):
+    def forward(self, X, training=False):
         cache = {}
 
         A = X
@@ -66,6 +78,7 @@ class MLP:
 
         number_of_layers = len(self.hidden_layers) + 1
 
+        # Hidden layers
         for layer in range(1, number_of_layers):
             W = self.parameters[f"W{layer}"]
             b = self.parameters[f"b{layer}"]
@@ -73,9 +86,15 @@ class MLP:
             Z = np.dot(A, W) + b
             A = self.activation(Z)
 
+            # Dropout only during training and only on hidden layers
+            if training and self.dropout_rate > 0:
+                A, D = apply_dropout(A, self.dropout_rate)
+                cache[f"D{layer}"] = D
+
             cache[f"Z{layer}"] = Z
             cache[f"A{layer}"] = A
 
+        # Output layer
         W_output = self.parameters[f"W{number_of_layers}"]
         b_output = self.parameters[f"b{number_of_layers}"]
 
@@ -86,6 +105,20 @@ class MLP:
         cache[f"A{number_of_layers}"] = A_output
 
         return A_output, cache
+
+    def compute_loss(self, y_true, y_pred):
+        if self.output_size == 1:
+            y_true = y_true.reshape(-1, 1)
+
+        base_loss = self.loss_function(y_true, y_pred)
+
+        regularization_loss = l2_penalty(
+            parameters=self.parameters,
+            l2_lambda=self.l2_lambda,
+            m=y_true.shape[0]
+        )
+
+        return base_loss + regularization_loss
 
     def backward(self, y, cache):
         gradients = {}
@@ -98,10 +131,6 @@ class MLP:
         if self.output_size == 1:
             y = y.reshape(-1, 1)
 
-        # Cas classiques simplifiés :
-        # sigmoid + binary_cross_entropy
-        # softmax + categorical_cross_entropy
-        # linear/mse plus tard si tu ajoutes linear
         if self.loss_name in ["binary_cross_entropy", "categorical_cross_entropy"]:
             dZ = A_output - y
         else:
@@ -122,6 +151,16 @@ class MLP:
                 W = self.parameters[f"W{layer}"]
                 dA_previous = np.dot(dZ, W.T)
 
+                # Dropout backward for previous hidden layer
+                dropout_key = f"D{layer - 1}"
+
+                if self.dropout_rate > 0 and dropout_key in cache:
+                    dA_previous = apply_dropout_backward(
+                        dA_previous,
+                        cache[dropout_key],
+                        self.dropout_rate
+                    )
+
                 Z_previous = cache[f"Z{layer - 1}"]
                 A_previous_hidden = cache[f"A{layer - 1}"]
 
@@ -129,6 +168,13 @@ class MLP:
                     Z_previous,
                     A_previous_hidden
                 )
+
+        gradients = add_l2_to_gradients(
+            parameters=self.parameters,
+            gradients=gradients,
+            l2_lambda=self.l2_lambda,
+            m=m
+        )
 
         return gradients
 
@@ -144,16 +190,16 @@ class MLP:
             y = y.reshape(-1, 1)
 
         for epoch in range(self.epochs):
-            y_pred, cache = self.forward(X)
+            y_pred, cache = self.forward(X, training=True)
 
-            loss = self.loss_function(y, y_pred)
+            loss = self.compute_loss(y, y_pred)
             self.loss_history.append(loss)
 
             gradients = self.backward(y, cache)
             self.update_parameters(gradients)
 
     def predict_proba(self, X):
-        y_pred, _ = self.forward(X)
+        y_pred, _ = self.forward(X, training=False)
         return y_pred
 
     def predict(self, X):

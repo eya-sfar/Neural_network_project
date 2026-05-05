@@ -417,33 +417,6 @@ def make_confusion_matrix_plot(cm):
     return fig
 
 
-def binary_precision(y_true, y_pred):
-    y_true = y_true.reshape(-1)
-    y_pred = y_pred.reshape(-1)
-
-    tp = np.sum((y_true == 1) & (y_pred == 1))
-    fp = np.sum((y_true == 0) & (y_pred == 1))
-
-    return tp / (tp + fp + 1e-15)
-
-
-def binary_recall(y_true, y_pred):
-    y_true = y_true.reshape(-1)
-    y_pred = y_pred.reshape(-1)
-
-    tp = np.sum((y_true == 1) & (y_pred == 1))
-    fn = np.sum((y_true == 1) & (y_pred == 0))
-
-    return tp / (tp + fn + 1e-15)
-
-
-def binary_f1(y_true, y_pred):
-    p = binary_precision(y_true, y_pred)
-    r = binary_recall(y_true, y_pred)
-
-    return 2 * p * r / (p + r + 1e-15)
-
-
 def get_confusion_matrix_array(y_true, y_pred):
     result = confusion_matrix(y_true, y_pred)
 
@@ -485,10 +458,77 @@ def train_perceptron_model(model, X, y, test_size, model_type):
         "train_loss": train_loss_history,
         "test_loss": [1 - test_acc for _ in train_loss_history],
         "train_metric": [train_acc for _ in train_loss_history],
-        "test_metric": [test_acc for _ in train_loss_history]
+        "test_metric": [test_acc for _ in train_loss_history],
+        "train_accuracy": [train_acc for _ in train_loss_history],
+        "test_accuracy": [test_acc for _ in train_loss_history],
+        "test_precision": [precision(y_test, test_pred, average="binary") for _ in train_loss_history],
+        "test_recall": [recall(y_test, test_pred, average="binary") for _ in train_loss_history],
+        "test_f1": [f1_score(y_test, test_pred, average="binary") for _ in train_loss_history]
     }
 
     return history, X_train, X_test, y_train, y_test, train_pred, test_pred
+
+
+def train_mlp_for_experiment(
+    X,
+    y,
+    config,
+    problem_type,
+    hidden_layers,
+    activation,
+    learning_rate,
+    epochs,
+    test_size,
+    l2_lambda=0.0,
+    dropout_rate=0.0,
+    early_stopping=False,
+    patience=20
+):
+    model = MLP(
+        input_size=config["input_size"],
+        hidden_layers=hidden_layers,
+        output_size=config["output_size"],
+        learning_rate=learning_rate,
+        epochs=epochs,
+        activation=activation,
+        output_activation=config["output_activation"],
+        loss=config["loss"],
+        l2_lambda=l2_lambda,
+        dropout_rate=dropout_rate
+    )
+
+    trainer = Trainer(model=model, problem_type=problem_type)
+
+    history = trainer.train(
+        X,
+        y,
+        test_size=test_size,
+        early_stopping=early_stopping,
+        patience=patience
+    )
+
+    y_pred = model.predict(trainer.X_test)
+
+    return {
+        "model": model,
+        "trainer": trainer,
+        "history": history,
+        "X_train": trainer.X_train,
+        "X_test": trainer.X_test,
+        "y_train": trainer.y_train,
+        "y_test": trainer.y_test,
+        "y_pred": y_pred,
+        "final_train_loss": history["train_loss"][-1],
+        "final_test_loss": history["test_loss"][-1],
+        "final_train_metric": history["train_metric"][-1],
+        "final_test_metric": history["test_metric"][-1],
+    }
+
+
+def metric_name(problem_type):
+    if problem_type == "regression":
+        return "MSE"
+    return "Accuracy"
 
 
 # ============================================================
@@ -552,16 +592,36 @@ with st.sidebar:
         label_visibility="collapsed"
     )
 
-    st.markdown('<div class="section-title">Model</div>', unsafe_allow_html=True)
-    model_type = st.radio(
-        "Model",
+    st.markdown('<div class="section-title">Mode</div>', unsafe_allow_html=True)
+    app_mode = st.radio(
+        "Mode",
         [
-            "MLP",
-            "Historical Perceptron",
-            "Activated Perceptron"
+            "Manual Training",
+            "Experiment 1: Perceptron vs MLP",
+            "Experiment 2: Effect of Layers",
+            "Experiment 3: Regularization"
         ],
         label_visibility="collapsed"
     )
+
+    st.markdown('<div class="section-title">Model</div>', unsafe_allow_html=True)
+
+    if app_mode == "Manual Training":
+        model_type = st.radio(
+            "Model",
+            [
+                "MLP",
+                "Historical Perceptron",
+                "Activated Perceptron"
+            ],
+            label_visibility="collapsed"
+        )
+    else:
+        model_type = "MLP"
+        st.markdown(
+            '<div class="info-box">Experiment mode uses predefined model comparisons.</div>',
+            unsafe_allow_html=True
+        )
 
     if model_type != "MLP" and problem_type != "binary_classification":
         st.markdown(
@@ -569,35 +629,39 @@ with st.sidebar:
             unsafe_allow_html=True
         )
 
-    if model_type == "MLP":
-        st.markdown('<div class="section-title">Architecture</div>', unsafe_allow_html=True)
-        hidden_layers_text = st.text_input("Hidden layers", value="8,4")
+    if app_mode == "Manual Training":
+        if model_type == "MLP":
+            st.markdown('<div class="section-title">Architecture</div>', unsafe_allow_html=True)
+            hidden_layers_text = st.text_input("Hidden layers", value="8,4")
 
-        st.markdown('<div class="section-title">Activation</div>', unsafe_allow_html=True)
-        activation = st.selectbox(
-            "Hidden activation",
-            ["relu", "sigmoid", "tanh"],
-            format_func=lambda x: {
-                "relu": "ReLU",
-                "sigmoid": "Sigmoid",
-                "tanh": "Tanh"
-            }[x]
-        )
-    else:
-        hidden_layers_text = ""
-        activation = "sigmoid"
-
-        if model_type == "Activated Perceptron":
             st.markdown('<div class="section-title">Activation</div>', unsafe_allow_html=True)
             activation = st.selectbox(
-                "Activation",
-                ["sigmoid", "tanh", "relu"],
+                "Hidden activation",
+                ["relu", "sigmoid", "tanh"],
                 format_func=lambda x: {
+                    "relu": "ReLU",
                     "sigmoid": "Sigmoid",
-                    "tanh": "Tanh",
-                    "relu": "ReLU"
+                    "tanh": "Tanh"
                 }[x]
             )
+        else:
+            hidden_layers_text = ""
+            activation = "sigmoid"
+
+            if model_type == "Activated Perceptron":
+                st.markdown('<div class="section-title">Activation</div>', unsafe_allow_html=True)
+                activation = st.selectbox(
+                    "Activation",
+                    ["sigmoid", "tanh", "relu"],
+                    format_func=lambda x: {
+                        "sigmoid": "Sigmoid",
+                        "tanh": "Tanh",
+                        "relu": "ReLU"
+                    }[x]
+                )
+    else:
+        hidden_layers_text = ""
+        activation = "relu"
 
     st.markdown('<div class="section-title">Training</div>', unsafe_allow_html=True)
 
@@ -617,10 +681,77 @@ with st.sidebar:
         step=0.05
     )
 
-    st.markdown('<div class="section-title">Regularization</div>', unsafe_allow_html=True)
-    st.info("L2, Dropout and Early stopping can be added after the base platform is stable.")
+    if app_mode == "Experiment 1: Perceptron vs MLP":
+        st.markdown('<div class="section-title">Experiment 1 Parameters</div>', unsafe_allow_html=True)
+        exp1_hidden_layers_text = st.text_input("MLP architecture", value="8,4")
+        exp1_activation = st.selectbox("MLP activation", ["relu", "sigmoid", "tanh"])
 
-    train_button = st.button("▶ Train model", type="primary", use_container_width=True)
+    elif app_mode == "Experiment 2: Effect of Layers":
+        st.markdown('<div class="section-title">Experiment 2 Architectures</div>', unsafe_allow_html=True)
+        arch1_text = st.text_input("Architecture 1", value="8")
+        arch2_text = st.text_input("Architecture 2", value="16,8")
+        arch3_text = st.text_input("Architecture 3", value="32,16,8")
+        exp2_activation = st.selectbox("Activation", ["relu", "sigmoid", "tanh"])
+
+    elif app_mode == "Experiment 3: Regularization":
+        st.markdown('<div class="section-title">Experiment 3 Parameters</div>', unsafe_allow_html=True)
+        exp3_hidden_layers_text = st.text_input("Architecture", value="32,16")
+        exp3_activation = st.selectbox("Activation", ["relu", "sigmoid", "tanh"])
+
+    st.markdown('<div class="section-title">Regularization</div>', unsafe_allow_html=True)
+
+    # Default values used by both Manual Training and Experiment 3
+    use_l2 = False
+    l2_lambda = 0.0
+    use_dropout = False
+    dropout_rate = 0.0
+    use_early_stopping = False
+    early_stopping_patience = 20
+
+    if app_mode == "Manual Training" and model_type == "MLP":
+        use_l2 = st.checkbox("Use L2 Regularization", value=False)
+        if use_l2:
+            l2_lambda = st.slider(
+                "L2 Lambda",
+                min_value=0.0,
+                max_value=0.1,
+                value=0.01,
+                step=0.001
+            )
+
+        use_dropout = st.checkbox("Use Dropout", value=False)
+        if use_dropout:
+            dropout_rate = st.slider(
+                "Dropout Rate",
+                min_value=0.0,
+                max_value=0.8,
+                value=0.2,
+                step=0.05
+            )
+
+        use_early_stopping = st.checkbox("Use Early Stopping", value=False)
+        if use_early_stopping:
+            early_stopping_patience = st.slider(
+                "Early Stopping Patience",
+                min_value=5,
+                max_value=100,
+                value=20,
+                step=5
+            )
+
+    elif app_mode == "Experiment 3: Regularization":
+        st.info("This experiment compares: no regularization, L2, Dropout, and Early Stopping.")
+        l2_lambda = st.slider("L2 lambda for comparison", 0.0, 0.1, 0.01, step=0.005)
+        dropout_rate = st.slider("Dropout rate for comparison", 0.0, 0.8, 0.2, step=0.05)
+        early_stopping_patience = st.slider("Early stopping patience", 5, 100, 20, step=5)
+
+    else:
+        st.info("Regularization is available for MLP manual training and Experiment 3.")
+
+    if app_mode == "Manual Training":
+        train_button = st.button("▶ Train model", type="primary", use_container_width=True)
+    else:
+        train_button = st.button("▶ Run experiment", type="primary", use_container_width=True)
 
 
 # ============================================================
@@ -724,6 +855,355 @@ else:
                 if X.shape[0] < 4:
                     raise ValueError("Dataset is too small. Please use at least 4 rows.")
 
+                # ============================================================
+                # Experiment 1: Perceptron vs MLP
+                # ============================================================
+
+                if app_mode == "Experiment 1: Perceptron vs MLP":
+                    if problem_type != "binary_classification":
+                        st.error("Experiment 1 uses Perceptron, so it only works with binary classification.")
+                        st.stop()
+
+                    hidden_layers = safe_parse_hidden_layers(exp1_hidden_layers_text)
+
+                    st.subheader("Experiment 1: Perceptron vs MLP")
+
+                    with st.spinner("Training Perceptron and MLP..."):
+                        perceptron_model = Perceptron(
+                            learning_rate=learning_rate,
+                            epochs=epochs
+                        )
+
+                        history_p, X_train_p, X_test_p, y_train_p, y_test_p, train_pred_p, test_pred_p = train_perceptron_model(
+                            model=perceptron_model,
+                            X=X,
+                            y=y,
+                            test_size=test_size,
+                            model_type="Historical Perceptron"
+                        )
+
+                        mlp_result = train_mlp_for_experiment(
+                            X=X,
+                            y=y,
+                            config=config,
+                            problem_type=problem_type,
+                            hidden_layers=hidden_layers,
+                            activation=exp1_activation,
+                            learning_rate=learning_rate,
+                            epochs=epochs,
+                            test_size=test_size
+                        )
+
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Perceptron Test Accuracy", f"{history_p['test_metric'][-1] * 100:.2f}%")
+                    c2.metric("MLP Test Accuracy", f"{mlp_result['final_test_metric'] * 100:.2f}%")
+                    c3.metric("Perceptron Final Loss", f"{history_p['train_loss'][-1]:.4f}")
+                    c4.metric("MLP Final Test Loss", f"{mlp_result['final_test_loss']:.4f}")
+
+                    comparison_df = pd.DataFrame([
+                        {
+                            "Model": "Historical Perceptron",
+                            "Architecture": "Single linear unit",
+                            "Train metric": history_p["train_metric"][-1],
+                            "Test metric": history_p["test_metric"][-1],
+                            "Final train loss": history_p["train_loss"][-1],
+                            "Final test loss": history_p["test_loss"][-1]
+                        },
+                        {
+                            "Model": "MLP",
+                            "Architecture": str(hidden_layers),
+                            "Train metric": mlp_result["final_train_metric"],
+                            "Test metric": mlp_result["final_test_metric"],
+                            "Final train loss": mlp_result["final_train_loss"],
+                            "Final test loss": mlp_result["final_test_loss"]
+                        }
+                    ])
+
+                    st.dataframe(comparison_df, use_container_width=True)
+
+                    fig_loss = go.Figure()
+                    fig_loss.add_trace(go.Scatter(
+                        y=history_p["train_loss"],
+                        name="Perceptron loss",
+                        line=dict(color=COLORS["amber"])
+                    ))
+                    fig_loss.add_trace(go.Scatter(
+                        y=mlp_result["history"]["train_loss"],
+                        name="MLP train loss",
+                        line=dict(color=COLORS["purple"])
+                    ))
+                    fig_loss.add_trace(go.Scatter(
+                        y=mlp_result["history"]["test_loss"],
+                        name="MLP test loss",
+                        line=dict(color=COLORS["coral"], dash="dot")
+                    ))
+                    fig_loss.update_layout(
+                        **PLOTLY_LAYOUT,
+                        title="Experiment 1 - Loss Comparison",
+                        xaxis_title="Epoch",
+                        yaxis_title="Loss",
+                        height=420
+                    )
+                    st.plotly_chart(fig_loss, use_container_width=True)
+
+                    if mlp_result["final_test_metric"] > history_p["test_metric"][-1]:
+                        st.markdown("""
+                        <div class="info-box">
+                        The MLP performs better than the Perceptron. This usually means that the dataset contains
+                        non-linear patterns that cannot be learned well by a simple linear model.
+                        </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        st.markdown("""
+                        <div class="warn-box">
+                        The Perceptron performs similarly or better. This may mean that the dataset is simple or mostly linearly separable.
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                    st.stop()
+
+                # ============================================================
+                # Experiment 2: Effect of Layers
+                # ============================================================
+
+                if app_mode == "Experiment 2: Effect of Layers":
+                    architectures = {
+                        "Architecture 1": safe_parse_hidden_layers(arch1_text),
+                        "Architecture 2": safe_parse_hidden_layers(arch2_text),
+                        "Architecture 3": safe_parse_hidden_layers(arch3_text)
+                    }
+
+                    st.subheader("Experiment 2: Effect of Number of Layers")
+
+                    results = []
+                    fig_loss = go.Figure()
+                    fig_metric = go.Figure()
+
+                    with st.spinner("Training different MLP architectures..."):
+                        for name, layers in architectures.items():
+                            result = train_mlp_for_experiment(
+                                X=X,
+                                y=y,
+                                config=config,
+                                problem_type=problem_type,
+                                hidden_layers=layers,
+                                activation=exp2_activation,
+                                learning_rate=learning_rate,
+                                epochs=epochs,
+                                test_size=test_size
+                            )
+
+                            results.append({
+                                "Model": name,
+                                "Architecture": str(layers),
+                                "Number of hidden layers": len(layers),
+                                "Train metric": result["final_train_metric"],
+                                "Test metric": result["final_test_metric"],
+                                "Train loss": result["final_train_loss"],
+                                "Test loss": result["final_test_loss"],
+                                "Generalization gap": abs(result["final_train_metric"] - result["final_test_metric"])
+                            })
+
+                            fig_loss.add_trace(go.Scatter(
+                                y=result["history"]["train_loss"],
+                                name=f"{name} train loss"
+                            ))
+
+                            fig_loss.add_trace(go.Scatter(
+                                y=result["history"]["test_loss"],
+                                name=f"{name} test loss",
+                                line=dict(dash="dot")
+                            ))
+
+                            fig_metric.add_trace(go.Scatter(
+                                y=result["history"]["train_metric"],
+                                name=f"{name} train {metric_name(problem_type)}"
+                            ))
+
+                            fig_metric.add_trace(go.Scatter(
+                                y=result["history"]["test_metric"],
+                                name=f"{name} test {metric_name(problem_type)}",
+                                line=dict(dash="dot")
+                            ))
+
+                    results_df = pd.DataFrame(results)
+                    st.dataframe(results_df, use_container_width=True)
+
+                    best_row = results_df.sort_values(by="Test metric", ascending=False).iloc[0]
+
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Best architecture", best_row["Architecture"])
+                    c2.metric(f"Best test {metric_name(problem_type)}", f"{best_row['Test metric']:.4f}")
+                    c3.metric("Generalization gap", f"{best_row['Generalization gap']:.4f}")
+
+                    fig_loss.update_layout(
+                        **PLOTLY_LAYOUT,
+                        title="Experiment 2 - Loss Comparison by Architecture",
+                        xaxis_title="Epoch",
+                        yaxis_title="Loss",
+                        height=420
+                    )
+                    st.plotly_chart(fig_loss, use_container_width=True)
+
+                    fig_metric.update_layout(
+                        **PLOTLY_LAYOUT,
+                        title=f"Experiment 2 - {metric_name(problem_type)} Comparison",
+                        xaxis_title="Epoch",
+                        yaxis_title=metric_name(problem_type),
+                        height=420
+                    )
+                    st.plotly_chart(fig_metric, use_container_width=True)
+
+                    st.markdown("""
+                    <div class="info-box">
+                    This experiment shows how the number of hidden layers changes the learning capacity of the model.
+                    A deeper model can learn more complex patterns, but if the gap between train and test performance becomes large,
+                    the model may be overfitting.
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    st.stop()
+
+                # ============================================================
+                # Experiment 3: Regularization
+                # ============================================================
+
+                if app_mode == "Experiment 3: Regularization":
+                    hidden_layers = safe_parse_hidden_layers(exp3_hidden_layers_text)
+
+                    configs_exp = [
+                        {
+                            "name": "Without regularization",
+                            "l2_lambda": 0.0,
+                            "dropout_rate": 0.0,
+                            "early_stopping": False
+                        },
+                        {
+                            "name": "With L2 regularization",
+                            "l2_lambda": l2_lambda,
+                            "dropout_rate": 0.0,
+                            "early_stopping": False
+                        },
+                        {
+                            "name": "With Dropout",
+                            "l2_lambda": 0.0,
+                            "dropout_rate": dropout_rate,
+                            "early_stopping": False
+                        },
+                        {
+                            "name": "With Early Stopping",
+                            "l2_lambda": 0.0,
+                            "dropout_rate": 0.0,
+                            "early_stopping": True
+                        }
+                    ]
+
+                    st.subheader("Experiment 3: Overfitting vs Regularization")
+
+                    results = []
+                    fig_loss = go.Figure()
+                    fig_metric = go.Figure()
+
+                    with st.spinner("Training regularized and non-regularized models..."):
+                        for exp_config in configs_exp:
+                            name = exp_config["name"]
+
+                            result = train_mlp_for_experiment(
+                                X=X,
+                                y=y,
+                                config=config,
+                                problem_type=problem_type,
+                                hidden_layers=hidden_layers,
+                                activation=exp3_activation,
+                                learning_rate=learning_rate,
+                                epochs=epochs,
+                                test_size=test_size,
+                                l2_lambda=exp_config["l2_lambda"],
+                                dropout_rate=exp_config["dropout_rate"],
+                                early_stopping=exp_config["early_stopping"],
+                                patience=early_stopping_patience
+                            )
+
+                            gap = abs(result["final_train_metric"] - result["final_test_metric"])
+
+                            results.append({
+                                "Model": name,
+                                "Architecture": str(hidden_layers),
+                                "L2 lambda": exp_config["l2_lambda"],
+                                "Dropout rate": exp_config["dropout_rate"],
+                                "Early stopping": exp_config["early_stopping"],
+                                "Train metric": result["final_train_metric"],
+                                "Test metric": result["final_test_metric"],
+                                "Train loss": result["final_train_loss"],
+                                "Test loss": result["final_test_loss"],
+                                "Generalization gap": gap
+                            })
+
+                            fig_loss.add_trace(go.Scatter(
+                                y=result["history"]["train_loss"],
+                                name=f"{name} train loss"
+                            ))
+
+                            fig_loss.add_trace(go.Scatter(
+                                y=result["history"]["test_loss"],
+                                name=f"{name} test loss",
+                                line=dict(dash="dot")
+                            ))
+
+                            fig_metric.add_trace(go.Scatter(
+                                y=result["history"]["train_metric"],
+                                name=f"{name} train {metric_name(problem_type)}"
+                            ))
+
+                            fig_metric.add_trace(go.Scatter(
+                                y=result["history"]["test_metric"],
+                                name=f"{name} test {metric_name(problem_type)}",
+                                line=dict(dash="dot")
+                            ))
+
+                    results_df = pd.DataFrame(results)
+                    st.dataframe(results_df, use_container_width=True)
+
+                    best_gap_row = results_df.sort_values(by="Generalization gap", ascending=True).iloc[0]
+                    best_metric_row = results_df.sort_values(by="Test metric", ascending=False).iloc[0]
+
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Best test metric", best_metric_row["Model"])
+                    c2.metric("Best generalization gap", best_gap_row["Model"])
+                    c3.metric("L2 / Dropout", f"{l2_lambda:.3f} / {dropout_rate:.2f}")
+
+                    fig_loss.update_layout(
+                        **PLOTLY_LAYOUT,
+                        title="Experiment 3 - Train vs Test Loss",
+                        xaxis_title="Epoch",
+                        yaxis_title="Loss",
+                        height=420
+                    )
+                    st.plotly_chart(fig_loss, use_container_width=True)
+
+                    fig_metric.update_layout(
+                        **PLOTLY_LAYOUT,
+                        title=f"Experiment 3 - Train vs Test {metric_name(problem_type)}",
+                        xaxis_title="Epoch",
+                        yaxis_title=metric_name(problem_type),
+                        height=420
+                    )
+                    st.plotly_chart(fig_metric, use_container_width=True)
+
+                    st.markdown(f"""
+                    <div class="info-box">
+                    This experiment compares four strategies: no regularization, L2, Dropout, and Early Stopping.
+                    The best test metric was achieved by <b>{best_metric_row['Model']}</b>.
+                    The smallest generalization gap was achieved by <b>{best_gap_row['Model']}</b>.
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    st.stop()
+
+                # ============================================================
+                # Manual Training
+                # ============================================================
+
                 if model_type == "MLP":
                     hidden_layers = safe_parse_hidden_layers(hidden_layers_text)
 
@@ -735,7 +1215,9 @@ else:
                         epochs=epochs,
                         activation=activation,
                         output_activation=config["output_activation"],
-                        loss=config["loss"]
+                        loss=config["loss"],
+                        l2_lambda=l2_lambda,
+                        dropout_rate=dropout_rate
                     )
 
                     trainer = Trainer(model=model, problem_type=problem_type)
@@ -805,7 +1287,9 @@ else:
                             X,
                             y,
                             test_size=test_size,
-                            callback=live_training_update
+                            callback=live_training_update,
+                            early_stopping=use_early_stopping,
+                            patience=early_stopping_patience
                         )
 
                     y_pred = model.predict(trainer.X_test)
@@ -945,6 +1429,7 @@ if st.session_state.trained:
                 metric_label
             )
             st.plotly_chart(fig_metric, use_container_width=True)
+
         if problem_type in ["binary_classification", "multiclass_classification"]:
             st.subheader("Classification Metrics Evolution")
 

@@ -8,6 +8,8 @@ from utils.metrics import (
     mse
 )
 
+from training.regulations import EarlyStopping
+
 
 class Trainer:
     def __init__(self, model, problem_type="binary_classification"):
@@ -144,7 +146,19 @@ class Trainer:
         else:
             raise ValueError(f"Problem type inconnu: {self.problem_type}")
 
-    def train(self, X, y, test_size=0.2, callback=None):
+    # ============================================================
+    # MODIFIED TRAIN FUNCTION (with Early Stopping)
+    # ============================================================
+
+    def train(
+        self,
+        X,
+        y,
+        test_size=0.2,
+        callback=None,
+        early_stopping=False,
+        patience=20
+    ):
         self.X_train, self.X_test, self.y_train, self.y_test = self.train_test_split(
             X,
             y,
@@ -154,16 +168,26 @@ class Trainer:
         y_train_model = self._prepare_y_for_model(self.y_train)
         y_test_model = self._prepare_y_for_model(self.y_test)
 
+        # Early stopping object
+        if early_stopping:
+            early_stopper = EarlyStopping(patience=patience)
+
         for epoch in range(self.model.epochs):
-            y_train_pred, cache = self.model.forward(self.X_train)
 
-            train_loss = self.model.loss_function(y_train_model, y_train_pred)
+            # Forward (TRAIN with dropout)
+            y_train_pred, cache = self.model.forward(self.X_train, training=True)
 
+            # Loss (with L2 included)
+            train_loss = self.model.compute_loss(y_train_model, y_train_pred)
+
+            # Backprop
             gradients = self.model.backward(y_train_model, cache)
             self.model.update_parameters(gradients)
 
-            y_test_pred, _ = self.model.forward(self.X_test)
-            test_loss = self.model.loss_function(y_test_model, y_test_pred)
+            # Forward (TEST without dropout)
+            y_test_pred, _ = self.model.forward(self.X_test, training=False)
+
+            test_loss = self.model.compute_loss(y_test_model, y_test_pred)
 
             self.history["train_loss"].append(train_loss)
             self.history["test_loss"].append(test_loss)
@@ -177,5 +201,13 @@ class Trainer:
 
             if callback is not None:
                 callback(epoch, self.history)
+
+            # ===== EARLY STOPPING =====
+            if early_stopping:
+                stop = early_stopper.update(test_loss)
+
+                if stop:
+                    print(f"Early stopping at epoch {epoch + 1}")
+                    break
 
         return self.history
